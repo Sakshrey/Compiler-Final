@@ -1,5 +1,9 @@
 
 from pathlib import Path
+import os
+import shutil
+import subprocess
+import tempfile
 
 import pandas as pd
 import plotly.express as px
@@ -61,6 +65,7 @@ page = st.sidebar.radio(
     "Navigate",
     [
         "Overview",
+        "Try Your Code",
         "Exhaustive Search",
         "Bayesian Optimization",
         "Reports & Downloads",
@@ -93,6 +98,159 @@ else:
     best_tac = None
     baseline = None
 
+
+# Interactive compiler page
+if page == "Try Your Code":
+    st.header("Try Your Own Code")
+    st.caption(
+        "This project supports a small C-like integer language, not all of C. "
+        "Use declarations, assignments, + - * /, parentheses, and return."
+    )
+
+    default_source = """int a;
+int b;
+int c;
+a = 10 + 20;
+b = a * 2;
+c = b + 0;
+return c;
+"""
+    source_code = st.text_area(
+        "Enter your program",
+        value=default_source,
+        height=240,
+        help="Example: int x; x = 2 + 3; return x;",
+    )
+    pass_sequence = st.multiselect(
+        "Optimization passes (applied in this order)",
+        options=["CF", "AS", "DCE", "CSE"],
+        default=["CF", "AS", "DCE", "CSE"],
+        format_func=lambda p: {
+            "CF": "CF — Constant Folding",
+            "AS": "AS — Algebraic Simplification",
+            "DCE": "DCE — Dead Code Elimination",
+            "CSE": "CSE — Common Subexpression Elimination",
+        }[p],
+    )
+
+    def get_compiler():
+        """Return a usable compiler binary, building from bundled C sources if needed."""
+        bundled_exe = ROOT / "compiler.exe"
+        if os.name == "nt" and bundled_exe.exists():
+            return str(bundled_exe)
+
+        gcc = shutil.which("gcc")
+        if not gcc:
+            raise RuntimeError(
+                "A C compiler (gcc) is not available on this deployment. "
+                "Add `build-essential` to the app's packages.txt and redeploy."
+            )
+
+        built = ROOT / "compiler"
+        source_files = [
+            ROOT / "parser.tab.c",
+            ROOT / "lex.yy.c",
+            ROOT / "ast" / "ast.c",
+            ROOT / "ir" / "ir.c",
+            ROOT / "optimizer" / "algebraic_simplification.c",
+            ROOT / "optimizer" / "common_subexpression.c",
+            ROOT / "optimizer" / "constant_folding.c",
+            ROOT / "optimizer" / "dead_code_elimination.c",
+            ROOT / "optimizer" / "pass_manager.c",
+        ]
+        missing = [str(p.name) for p in source_files if not p.exists()]
+        if missing:
+            raise RuntimeError("Compiler source files are missing: " + ", ".join(missing))
+
+        newest_source = max(p.stat().st_mtime for p in source_files)
+        if not built.exists() or built.stat().st_mtime < newest_source:
+            command = [gcc, "-O2", "-o", str(built)] + [str(p) for p in source_files]
+            result = subprocess.run(
+                command, capture_output=True, text=True, timeout=60, cwd=str(ROOT)
+            )
+            if result.returncode:
+                raise RuntimeError("Could not build compiler:\\n" + result.stderr[-5000:])
+        return str(built)
+
+    def extract_tac(output, marker):
+        if marker not in output:
+            raise RuntimeError("Compiler output did not contain: " + marker)
+        part = output.split(marker, 1)[1]
+        if "Three Address Code:" in part:
+            part = part.split("Three Address Code:", 1)[1]
+        lines = []
+        for line in part.splitlines():
+            line = line.strip()
+            if line in {"Executing Optimization Passes:", "After Optimization:"}:
+                break
+            if line and not line.startswith("Enter program:"):
+                lines.append(line)
+        return lines
+
+    if st.button("Compile and optimize", type="primary"):
+        if not source_code.strip():
+            st.error("Enter a program first.")
+        else:
+            try:
+                compiler = get_compiler()
+                command = [compiler] + pass_sequence
+                result = subprocess.run(
+                    command,
+                    input=source_code,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    cwd=str(ROOT),
+                )
+                if result.returncode != 0:
+                    st.error("The compiler could not process this program.")
+                    details = (result.stderr + "\n" + result.stdout).strip()
+                    if details:
+                        st.code(details[-5000:], language="text")
+                else:
+                    output = result.stdout
+                    original_tac = extract_tac(output, "Before Optimization:")
+                    optimized_tac = extract_tac(output, "After Optimization:")
+                    original_count = len(original_tac)
+                    optimized_count = len(optimized_tac)
+                    reduction = (
+                        (original_count - optimized_count) / original_count * 100
+                        if original_count else 0.0
+                    )
+
+                    m1, m2, m3 = st.columns(3)
+                    m1.metric("Original TAC instructions", original_count)
+                    m2.metric("Optimized TAC instructions", optimized_count)
+                    m3.metric("Instruction reduction", f"{reduction:.2f}%")
+
+                    left, right = st.columns(2)
+                    with left:
+                        st.subheader("Original intermediate code")
+                        st.code("\n".join(original_tac) or "(no instructions)", language="text")
+                    with right:
+                        st.subheader("Optimized intermediate code")
+                        st.code("\n".join(optimized_tac) or "(no instructions)", language="text")
+
+                    with st.expander("Full compiler output"):
+                        st.code(output, language="text")
+
+                    report = (
+                        "SOURCE PROGRAM\n" + source_code
+                        + "\n\nORIGINAL TAC\n" + "\n".join(original_tac)
+                        + "\n\nOPTIMIZED TAC\n" + "\n".join(optimized_tac)
+                        + f"\n\nOriginal TAC instructions: {original_count}"
+                        + f"\nOptimized TAC instructions: {optimized_count}"
+                        + f"\nInstruction reduction: {reduction:.2f}%"
+                        + f"\nPass order: {' -> '.join(pass_sequence) or '(no passes)'}"
+                    )
+                    st.download_button(
+                        "Download compilation report",
+                        data=report,
+                        file_name="compiler_optimization_report.txt",
+                        mime="text/plain",
+                    )
+            except (RuntimeError, subprocess.TimeoutExpired, OSError) as exc:
+                st.error(str(exc))
 
 # Overview
 if page == "Overview":
