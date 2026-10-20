@@ -2,13 +2,15 @@ from pathlib import Path
 import os
 import shutil
 import subprocess
-import tempfile
 
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-# Page setup
+# ============================================================
+# PAGE SETUP
+# ============================================================
+
 st.set_page_config(
     page_title="Automatic Compiler Optimization",
     page_icon="⚙️",
@@ -24,7 +26,10 @@ st.write(
     "with exhaustive search."
 )
 
-# Load CSV files
+# ============================================================
+# LOAD EXISTING CSV RESULTS
+# ============================================================
+
 @st.cache_data
 def load_csv(path, modified_time):
     return pd.read_csv(path)
@@ -40,6 +45,7 @@ def read_csv(filename):
 def is_verified(df):
     if "verified" not in df.columns:
         return pd.Series(False, index=df.index)
+
     return df["verified"].astype(str).str.lower().isin(
         ["true", "1", "yes"]
     )
@@ -48,10 +54,13 @@ def is_verified(df):
 def get_scores(df):
     if "combined_tac_count" not in df.columns:
         return pd.Series(float("nan"), index=df.index)
-    return pd.to_numeric(df["combined_tac_count"], errors="coerce")
+
+    return pd.to_numeric(
+        df["combined_tac_count"],
+        errors="coerce",
+    )
 
 
-# Read existing results
 exhaustive = read_csv("exhaustive_search_results.csv")
 
 bayesian_results = {
@@ -59,7 +68,10 @@ bayesian_results = {
     for seed in (2026, 2027, 2028)
 }
 
-# Sidebar navigation
+# ============================================================
+# SIDEBAR NAVIGATION
+# ============================================================
+
 page = st.sidebar.radio(
     "Navigate",
     [
@@ -77,18 +89,29 @@ if st.sidebar.button("Refresh data"):
     st.cache_data.clear()
     st.rerun()
 
-# Calculate exhaustive metrics
+# ============================================================
+# EXHAUSTIVE METRICS
+# ============================================================
+
 if exhaustive is not None:
     ex_verified = is_verified(exhaustive)
     ex_scores = get_scores(exhaustive)
     valid_scores = ex_scores[ex_verified].dropna()
-    best_tac = valid_scores.min() if not valid_scores.empty else None
+
+    best_tac = (
+        valid_scores.min()
+        if not valid_scores.empty
+        else None
+    )
 
     baseline = None
+
     if "baseline_tac_count" in exhaustive.columns:
         baseline_values = pd.to_numeric(
-            exhaustive["baseline_tac_count"], errors="coerce"
+            exhaustive["baseline_tac_count"],
+            errors="coerce",
         ).dropna()
+
         if not baseline_values.empty:
             baseline = baseline_values.iloc[0]
 else:
@@ -98,22 +121,28 @@ else:
     baseline = None
 
 
-# Compiler helpers shared by the custom-code page
+# ============================================================
+# COMPILER HELPERS
+# ============================================================
 
 def get_compiler():
-    """Return a usable compiler binary, building from bundled C sources if needed."""
+    """Return an existing compiler or build it from bundled C sources."""
+
     bundled_exe = ROOT / "compiler.exe"
+
     if os.name == "nt" and bundled_exe.exists():
         return str(bundled_exe)
 
     gcc = shutil.which("gcc")
+
     if not gcc:
         raise RuntimeError(
             "A C compiler (gcc) is not available on this deployment. "
-            "Add `build-essential` to the app's packages.txt and redeploy."
+            "Add `build-essential` to packages.txt and redeploy."
         )
 
     built = ROOT / "compiler"
+
     source_files = [
         ROOT / "parser.tab.c",
         ROOT / "lex.yy.c",
@@ -126,23 +155,37 @@ def get_compiler():
         ROOT / "optimizer" / "pass_manager.c",
     ]
 
-    missing = [str(item.name) for item in source_files if not item.exists()]
+    missing = [
+        str(item.name)
+        for item in source_files
+        if not item.exists()
+    ]
+
     if missing:
         raise RuntimeError(
-            "Compiler source files are missing: " + ", ".join(missing)
+            "Compiler source files are missing: "
+            + ", ".join(missing)
         )
 
-    newest_source = max(item.stat().st_mtime for item in source_files)
+    newest_source = max(
+        item.stat().st_mtime
+        for item in source_files
+    )
 
-    if not built.exists() or built.stat().st_mtime < newest_source:
-        # POSIX feature-test macro enables the declaration for strdup().
+    if (
+        not built.exists()
+        or built.stat().st_mtime < newest_source
+    ):
         command = [
             gcc,
             "-D_POSIX_C_SOURCE=200809L",
             "-O2",
             "-o",
             str(built),
-        ] + [str(item) for item in source_files]
+        ] + [
+            str(item)
+            for item in source_files
+        ]
 
         result = subprocess.run(
             command,
@@ -154,13 +197,16 @@ def get_compiler():
 
         if result.returncode:
             raise RuntimeError(
-                "Could not build compiler:\n" + result.stderr[-5000:]
+                "Could not build compiler:\n"
+                + result.stderr[-5000:]
             )
 
     return str(built)
 
 
 def extract_tac(output, marker):
+    """Extract TAC instructions from compiler output."""
+
     if marker not in output:
         raise RuntimeError(
             "Compiler output did not contain: " + marker
@@ -188,16 +234,20 @@ def extract_tac(output, marker):
     return lines
 
 
-# Interactive compiler page
+# ============================================================
+# TRY YOUR CODE: BAYESIAN VS EXHAUSTIVE
+# ============================================================
+
 if page == "Try Your Code":
     from itertools import permutations
 
-    st.header("Find the Best Optimization Sequence")
+    st.header("Bayesian Optimization vs Exhaustive Search")
 
-    st.caption(
-        "Enter a program in this project's small C-like integer language. "
-        "The app will test all 24 orders of CF, AS, DCE and CSE and choose "
-        "the order producing the fewest TAC instructions for this input."
+    st.write(
+        "Run both methods on the same program. Exhaustive search "
+        "evaluates every non-empty ordered subset of CF, AS, DCE "
+        "and CSE (64 candidates). Bayesian optimization uses "
+        "previous evaluations to guide its next choices."
     )
 
     default_source = """int a;
@@ -216,27 +266,56 @@ return c;
         help="Example: int x; x = 2 + 3; return x;",
     )
 
-    st.info(
-        "You do not need to select a sequence. "
-        "The app tests every permutation automatically."
+    bo_trials = st.slider(
+        "Bayesian optimization evaluation budget",
+        min_value=8,
+        max_value=40,
+        value=16,
+        step=4,
+        help=(
+            "Number of Bayesian optimizer suggestions. "
+            "Repeated suggestions may reuse cached results."
+        ),
     )
 
-    if st.button("Find Best Optimization Sequence", type="primary"):
+    if st.button(
+        "Compare Bayesian vs Exhaustive",
+        type="primary",
+    ):
         if not source_code.strip():
             st.error("Enter a program first.")
+
         else:
             try:
+                from skopt import Optimizer
+                from skopt.space import Categorical
+
                 compiler = get_compiler()
+
                 passes = ("CF", "AS", "DCE", "CSE")
-                orders = list(permutations(passes))
-                rows = []
 
-                progress = st.progress(
-                    0,
-                    text="Preparing compiler search…",
-                )
+                # Generate all non-empty ordered pass sequences.
+                candidates = [
+                    order
+                    for length in range(1, len(passes) + 1)
+                    for order in permutations(passes, length)
+                ]
 
-                for index, order in enumerate(orders, start=1):
+                candidate_labels = [
+                    " -> ".join(order)
+                    for order in candidates
+                ]
+
+                cache = {}
+
+                def evaluate_sequence(order):
+                    """Compile a program using a particular pass sequence."""
+
+                    label = " -> ".join(order)
+
+                    if label in cache:
+                        return dict(cache[label])
+
                     result = subprocess.run(
                         [compiler, *order],
                         input=source_code,
@@ -249,208 +328,496 @@ return c;
                     output = result.stdout
 
                     if result.returncode != 0:
-                        rows.append({
-                            "sequence": " -> ".join(order),
-                            "count": None,
-                            "original": [],
-                            "optimized": [],
-                            "error": (
+                        row = {
+                            "Sequence": label,
+                            "Optimized TAC instructions": None,
+                            "Status": "Failed",
+                            "Error": (
                                 result.stderr + "\n" + output
                             ).strip()[-2000:],
-                        })
+                            "Original TAC": [],
+                            "Optimized TAC": [],
+                        }
+
                     else:
                         original = extract_tac(
-                            output, "Before Optimization:"
+                            output,
+                            "Before Optimization:",
                         )
+
                         optimized = extract_tac(
-                            output, "After Optimization:"
+                            output,
+                            "After Optimization:",
                         )
 
-                        rows.append({
-                            "sequence": " -> ".join(order),
-                            "count": len(optimized),
-                            "original": original,
-                            "optimized": optimized,
-                            "error": "",
-                        })
+                        row = {
+                            "Sequence": label,
+                            "Optimized TAC instructions": len(
+                                optimized
+                            ),
+                            "Status": "Success",
+                            "Error": "",
+                            "Original TAC": original,
+                            "Optimized TAC": optimized,
+                        }
 
-                    progress.progress(
-                        index / len(orders),
+                    cache[label] = dict(row)
+
+                    return row
+
+                # ------------------------------------------------
+                # EXHAUSTIVE SEARCH
+                # ------------------------------------------------
+
+                st.subheader("1. Exhaustive Search")
+
+                ex_progress = st.progress(
+                    0,
+                    text="Evaluating all 64 candidate sequences...",
+                )
+
+                exhaustive_rows = []
+
+                for i, order in enumerate(
+                    candidates,
+                    start=1,
+                ):
+                    row = evaluate_sequence(order)
+
+                    exhaustive_rows.append({
+                        "Sequence": row["Sequence"],
+                        "Optimized TAC instructions": (
+                            row["Optimized TAC instructions"]
+                        ),
+                        "Status": row["Status"],
+                    })
+
+                    ex_progress.progress(
+                        i / len(candidates),
                         text=(
-                            f"Testing sequence "
-                            f"{index}/{len(orders)}"
+                            f"Exhaustive: {i}/{len(candidates)}"
                         ),
                     )
 
-                progress.empty()
+                ex_progress.empty()
 
-                successful = [
-                    row for row in rows
-                    if row["count"] is not None
-                ]
+                # ------------------------------------------------
+                # BAYESIAN OPTIMIZATION
+                # ------------------------------------------------
 
-                if not successful:
-                    st.error(
-                        "The compiler could not process this program "
-                        "with any sequence."
-                    )
+                st.subheader("2. Bayesian Optimization")
 
-                    errors = [
-                        row["error"] for row in rows
-                        if row["error"]
+                st.caption(
+                    "The optimizer models the discrete sequence "
+                    "choice and uses a random-forest surrogate to "
+                    "select promising candidates. Its objective is "
+                    "to minimize TAC instruction count."
+                )
+
+                optimizer = Optimizer(
+                    dimensions=[
+                        Categorical(
+                            candidate_labels,
+                            name="pass_sequence",
+                        )
+                    ],
+                    base_estimator="RF",
+                    acq_func="EI",
+                    random_state=2026,
+                    n_initial_points=min(8, bo_trials),
+                )
+
+                bo_rows = []
+
+                bo_progress = st.progress(
+                    0,
+                    text="Starting Bayesian optimization...",
+                )
+
+                for trial in range(bo_trials):
+                    suggestion = optimizer.ask()
+
+                    label = suggestion[0]
+                    order = tuple(label.split(" -> "))
+
+                    row = evaluate_sequence(order)
+
+                    score = row[
+                        "Optimized TAC instructions"
                     ]
 
-                    if errors:
-                        st.code(errors[0], language="text")
+                    # Penalize failed compilations.
+                    optimizer.tell(
+                        suggestion,
+                        (
+                            float(score)
+                            if score is not None
+                            else 1_000_000.0
+                        ),
+                    )
+
+                    already_seen = any(
+                        item["Sequence"] == label
+                        for item in bo_rows
+                    )
+
+                    bo_rows.append({
+                        "Trial": trial + 1,
+                        "Sequence": label,
+                        "Optimized TAC instructions": score,
+                        "Status": row["Status"],
+                        "Evaluation": (
+                            "Repeated suggestion"
+                            if already_seen
+                            else "Evaluated / retrieved"
+                        ),
+                    })
+
+                    bo_progress.progress(
+                        (trial + 1) / bo_trials,
+                        text=(
+                            f"Bayesian: {trial + 1}/{bo_trials}"
+                        ),
+                    )
+
+                bo_progress.empty()
+
+                # ------------------------------------------------
+                # PREPARE RESULTS
+                # ------------------------------------------------
+
+                ex_df = pd.DataFrame(
+                    exhaustive_rows
+                ).sort_values(
+                    "Optimized TAC instructions",
+                    na_position="last",
+                )
+
+                bo_df = pd.DataFrame(bo_rows)
+
+                ex_ok = ex_df.dropna(
+                    subset=["Optimized TAC instructions"]
+                )
+
+                bo_ok = bo_df.dropna(
+                    subset=["Optimized TAC instructions"]
+                )
+
+                if ex_ok.empty:
+                    st.error(
+                        "No candidate sequence compiled successfully. "
+                        "Check the compiler output and source program."
+                    )
+
+                    failures = [
+                        cache[key]
+                        for key in cache
+                        if cache[key]["Status"] != "Success"
+                    ]
+
+                    if failures and failures[0].get("Error"):
+                        st.code(
+                            failures[0]["Error"],
+                            language="text",
+                        )
 
                 else:
-                    best_count = min(
-                        row["count"] for row in successful
+                    ex_best_count = int(
+                        ex_ok[
+                            "Optimized TAC instructions"
+                        ].min()
                     )
 
-                    best_rows = [
-                        row for row in successful
-                        if row["count"] == best_count
-                    ]
-
-                    best = best_rows[0]
-                    original_count = len(best["original"])
-
-                    reduction = (
-                        (original_count - best_count)
-                        / original_count * 100
-                        if original_count else 0.0
+                    ex_best_label = str(
+                        ex_ok.iloc[0]["Sequence"]
                     )
 
-                    st.success(
-                        f"Search complete: {len(successful)} of "
-                        f"{len(orders)} sequences ran successfully."
-                    )
+                    ex_best = cache[ex_best_label]
 
-                    st.subheader("Best sequence found for your input")
-                    st.code(best["sequence"], language="text")
+                    if not bo_ok.empty:
+                        bo_best_count = int(
+                            bo_ok[
+                                "Optimized TAC instructions"
+                            ].min()
+                        )
+
+                        bo_best_label = str(
+                            bo_ok.sort_values(
+                                "Optimized TAC instructions"
+                            ).iloc[0]["Sequence"]
+                        )
+
+                        bo_best = cache[bo_best_label]
+
+                    else:
+                        bo_best_count = None
+                        bo_best_label = (
+                            "No successful Bayesian trial"
+                        )
+                        bo_best = None
+
+                    # --------------------------------------------
+                    # SUMMARY METRICS
+                    # --------------------------------------------
+
+                    st.subheader("Results Comparison")
 
                     m1, m2, m3, m4 = st.columns(4)
 
                     m1.metric(
-                        "Sequences tested",
-                        f"{len(successful)}/{len(orders)}",
+                        "Exhaustive candidates",
+                        f"{len(ex_ok)}/{len(candidates)}",
                     )
+
                     m2.metric(
-                        "Original TAC instructions",
-                        original_count,
+                        "Exhaustive best TAC",
+                        ex_best_count,
                     )
+
                     m3.metric(
-                        "Best TAC instructions",
-                        best_count,
+                        "Bayesian trials",
+                        bo_trials,
                     )
+
                     m4.metric(
-                        "TAC reduction",
-                        f"{reduction:.2f}%",
+                        "Bayesian best TAC",
+                        (
+                            bo_best_count
+                            if bo_best_count is not None
+                            else "N/A"
+                        ),
                     )
 
-                    left, right = st.columns(2)
-
-                    with left:
-                        st.subheader("Original intermediate code")
-                        st.code(
-                            "\n".join(best["original"])
-                            or "(no instructions)",
-                            language="text",
-                        )
-
-                    with right:
-                        st.subheader("Best optimized intermediate code")
-                        st.code(
-                            "\n".join(best["optimized"])
-                            or "(no instructions)",
-                            language="text",
-                        )
-
-                    st.subheader("Results for all sequences")
-
-                    results_df = pd.DataFrame([
+                    compare_rows = [
                         {
-                            "Sequence": row["sequence"],
-                            "Optimized TAC instructions": row["count"],
-                            "Status": (
-                                "Success"
-                                if row["count"] is not None
-                                else "Failed"
-                            ),
-                        }
-                        for row in rows
-                    ]).sort_values(
-                        "Optimized TAC instructions",
-                        na_position="last",
-                    )
+                            "Method": "Exhaustive Search",
+                            "Candidates / trials": len(candidates),
+                            "Best sequence": ex_best_label,
+                            "Best TAC count": ex_best_count,
+                        },
+                        {
+                            "Method": "Bayesian Optimization",
+                            "Candidates / trials": bo_trials,
+                            "Best sequence": bo_best_label,
+                            "Best TAC count": bo_best_count,
+                        },
+                    ]
 
                     st.dataframe(
-                        results_df,
+                        pd.DataFrame(compare_rows),
                         use_container_width=True,
                         hide_index=True,
                     )
 
-                    fig = px.bar(
-                        results_df.dropna(
-                            subset=["Optimized TAC instructions"]
-                        ),
-                        x="Sequence",
-                        y="Optimized TAC instructions",
-                        title=(
-                            "TAC instruction count by "
-                            "optimization sequence"
-                        ),
+                    if bo_best_count is not None:
+                        if bo_best_count == ex_best_count:
+                            st.success(
+                                "Bayesian optimization matched "
+                                "the exhaustive-search best TAC "
+                                "count on this program."
+                            )
+
+                        else:
+                            st.info(
+                                f"Bayesian search used a smaller "
+                                f"evaluation budget and found "
+                                f"{bo_best_count} TAC instructions; "
+                                f"exhaustive search found "
+                                f"{ex_best_count}. Bayesian "
+                                f"optimization does not guarantee "
+                                f"the global optimum."
+                            )
+
+                    # --------------------------------------------
+                    # WINNING SEQUENCES
+                    # --------------------------------------------
+
+                    left, right = st.columns(2)
+
+                    with left:
+                        st.markdown(
+                            "**Exhaustive Search Winner**"
+                        )
+
+                        st.code(
+                            ex_best_label,
+                            language="text",
+                        )
+
+                        st.caption(
+                            f"Optimized TAC instructions: "
+                            f"{ex_best_count}"
+                        )
+
+                        st.markdown("Original TAC")
+
+                        st.code(
+                            "\n".join(
+                                ex_best["Original TAC"]
+                            ) or "(no instructions)",
+                            language="text",
+                        )
+
+                        st.markdown("Optimized TAC")
+
+                        st.code(
+                            "\n".join(
+                                ex_best["Optimized TAC"]
+                            ) or "(no instructions)",
+                            language="text",
+                        )
+
+                    with right:
+                        st.markdown(
+                            "**Bayesian Optimization Winner**"
+                        )
+
+                        st.code(
+                            bo_best_label,
+                            language="text",
+                        )
+
+                        if bo_best is not None:
+                            st.caption(
+                                f"Optimized TAC instructions: "
+                                f"{bo_best_count}"
+                            )
+
+                            st.markdown("Original TAC")
+
+                            st.code(
+                                "\n".join(
+                                    bo_best["Original TAC"]
+                                ) or "(no instructions)",
+                                language="text",
+                            )
+
+                            st.markdown("Optimized TAC")
+
+                            st.code(
+                                "\n".join(
+                                    bo_best["Optimized TAC"]
+                                ) or "(no instructions)",
+                                language="text",
+                            )
+
+                    # --------------------------------------------
+                    # EXHAUSTIVE RESULTS TABLE AND CHART
+                    # --------------------------------------------
+
+                    st.subheader(
+                        "Exhaustive Search — All Candidates"
                     )
 
-                    fig.update_layout(xaxis_tickangle=-45)
-                    st.plotly_chart(
-                        fig,
+                    st.dataframe(
+                        ex_df,
                         use_container_width=True,
+                        hide_index=True,
                     )
+
+                    ex_plot = ex_df.dropna(
+                        subset=["Optimized TAC instructions"]
+                    )
+
+                    if not ex_plot.empty:
+                        st.plotly_chart(
+                            px.bar(
+                                ex_plot,
+                                x="Sequence",
+                                y="Optimized TAC instructions",
+                                title=(
+                                    "Exhaustive Search: "
+                                    "TAC Count by Sequence"
+                                ),
+                            ),
+                            use_container_width=True,
+                        )
+
+                    # --------------------------------------------
+                    # BAYESIAN RESULTS TABLE AND CHART
+                    # --------------------------------------------
+
+                    st.subheader(
+                        "Bayesian Optimization — Trial History"
+                    )
+
+                    st.dataframe(
+                        bo_df,
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+                    if not bo_ok.empty:
+                        bo_plot = bo_df.dropna(
+                            subset=[
+                                "Optimized TAC instructions"
+                            ]
+                        )
+
+                        st.plotly_chart(
+                            px.line(
+                                bo_plot,
+                                x="Trial",
+                                y="Optimized TAC instructions",
+                                markers=True,
+                                title=(
+                                    "Bayesian Optimization: "
+                                    "TAC Count by Trial"
+                                ),
+                            ),
+                            use_container_width=True,
+                        )
+
+                    # --------------------------------------------
+                    # DOWNLOAD REPORT
+                    # --------------------------------------------
 
                     report = (
-                        "SOURCE PROGRAM\n"
-                        + source_code
-                        + "\n\nBEST SEQUENCE\n"
-                        + best["sequence"]
-                        + "\n\nORIGINAL TAC\n"
-                        + "\n".join(best["original"])
-                        + "\n\nBEST OPTIMIZED TAC\n"
-                        + "\n".join(best["optimized"])
-                        + f"\n\nOriginal TAC instructions: {original_count}"
-                        + f"\nBest TAC instructions: {best_count}"
-                        + f"\nTAC reduction: {reduction:.2f}%"
-                        + f"\nSuccessful sequences: "
-                        f"{len(successful)}/{len(orders)}"
-                        + "\n\nALL SEQUENCES\n"
-                        + results_df.to_string(index=False)
+                        pd.DataFrame(compare_rows).to_csv(
+                            index=False
+                        )
+                        + "\n\nEXHAUSTIVE RESULTS\n"
+                        + ex_df.to_csv(index=False)
+                        + "\nBAYESIAN TRIALS\n"
+                        + bo_df.to_csv(index=False)
                     )
 
                     st.download_button(
-                        "Download search report",
-                        report,
+                        "Download Comparison CSV Report",
+                        report.encode("utf-8"),
                         file_name=(
-                            "best_optimization_sequence_report.txt"
+                            "bayesian_vs_exhaustive_comparison.csv"
                         ),
-                        mime="text/plain",
+                        mime="text/csv",
                     )
 
                     st.caption(
-                        "This ranks sequences by TAC instruction count. "
-                        "It does not independently prove semantic "
-                        "equivalence for every user program."
+                        "Both methods optimize TAC instruction count, "
+                        "not measured runtime. This comparison does not "
+                        "independently prove semantic equivalence of "
+                        "each optimization result."
                     )
+
+            except ImportError:
+                st.error(
+                    "Bayesian optimization package is missing. "
+                    "Add `scikit-optimize` to requirements.txt "
+                    "and redeploy."
+                )
 
             except (
                 RuntimeError,
                 subprocess.TimeoutExpired,
                 OSError,
+                ValueError,
             ) as exc:
                 st.error(str(exc))
 
 
-# Overview
+# ============================================================
+# OVERVIEW PAGE
+# ============================================================
+
 if page == "Overview":
     st.header("Project Overview")
 
@@ -472,8 +839,15 @@ if page == "Overview":
         int(best_tac) if best_tac is not None else "N/A",
     )
 
-    if baseline is not None and best_tac is not None and baseline:
-        reduction = (baseline - best_tac) / baseline * 100
+    if (
+        baseline is not None
+        and best_tac is not None
+        and baseline
+    ):
+        reduction = (
+            (baseline - best_tac) / baseline * 100
+        )
+
         col3.metric(
             "TAC Reduction",
             f"{reduction:.2f}%",
@@ -502,11 +876,16 @@ if page == "Overview":
             "Candidates": len(df),
             "Verified": int(verified.sum()),
             "Best TAC": (
-                int(scores.min()) if not scores.empty else None
+                int(scores.min())
+                if not scores.empty
+                else None
             ),
             "Matches exhaustive best": (
                 bool(scores.min() == best_tac)
-                if not scores.empty and best_tac is not None
+                if (
+                    not scores.empty
+                    and best_tac is not None
+                )
                 else None
             ),
         })
@@ -524,7 +903,7 @@ if page == "Overview":
             summary_df,
             x="Seed",
             y="Best TAC",
-            title="Best TAC count by Bayesian random seed",
+            title="Best TAC Count by Bayesian Random Seed",
             text="Best TAC",
         )
 
@@ -532,8 +911,11 @@ if page == "Overview":
             fig,
             use_container_width=True,
         )
+
     else:
-        st.warning("No Bayesian result files were found.")
+        st.warning(
+            "No Bayesian result files were found."
+        )
 
     st.info(
         "TAC reduction measures instruction-count reduction, "
@@ -541,7 +923,10 @@ if page == "Overview":
     )
 
 
-# Exhaustive search page
+# ============================================================
+# EXHAUSTIVE SEARCH RESULTS PAGE
+# ============================================================
+
 elif page == "Exhaustive Search":
     st.header("Exhaustive Search Results")
 
@@ -552,15 +937,24 @@ elif page == "Exhaustive Search":
     verified = is_verified(exhaustive)
     scores = get_scores(exhaustive)
 
-    st.write(f"Orders tested: **{len(exhaustive)}**")
-    st.write(f"Verified: **{int(verified.sum())}**")
-    st.write(f"Failed or unverified: **{int((~verified).sum())}**")
+    st.write(
+        f"Orders tested: **{len(exhaustive)}**"
+    )
+
+    st.write(
+        f"Verified: **{int(verified.sum())}**"
+    )
+
+    st.write(
+        f"Failed or unverified: **{int((~verified).sum())}**"
+    )
 
     best_rows = exhaustive.loc[
         verified & scores.eq(best_tac)
     ]
 
     st.subheader("Best Sequences")
+
     st.dataframe(
         best_rows,
         use_container_width=True,
@@ -569,6 +963,7 @@ elif page == "Exhaustive Search":
 
     plot_df = exhaustive.copy()
     plot_df["TAC Count"] = get_scores(plot_df)
+
     plot_df["Status"] = is_verified(plot_df).map({
         True: "Verified",
         False: "Not verified",
@@ -579,17 +974,21 @@ elif page == "Exhaustive Search":
         x="sequence",
         y="TAC Count",
         color="Status",
-        title="TAC count for all pass orderings",
+        title="TAC Count for All Pass Orderings",
         hover_data=["sequence"],
     )
 
-    fig.update_layout(xaxis_tickangle=-45)
+    fig.update_layout(
+        xaxis_tickangle=-45
+    )
+
     st.plotly_chart(
         fig,
         use_container_width=True,
     )
 
     st.subheader("All Results")
+
     st.dataframe(
         exhaustive,
         use_container_width=True,
@@ -597,14 +996,17 @@ elif page == "Exhaustive Search":
     )
 
     st.download_button(
-        "Download exhaustive results CSV",
+        "Download Exhaustive Results CSV",
         exhaustive.to_csv(index=False).encode("utf-8"),
         file_name="exhaustive_search_results.csv",
         mime="text/csv",
     )
 
 
-# Bayesian results page
+# ============================================================
+# BAYESIAN OPTIMIZATION RESULTS PAGE
+# ============================================================
+
 elif page == "Bayesian Optimization":
     st.header("Bayesian Optimization Results")
 
@@ -627,16 +1029,19 @@ elif page == "Bayesian Optimization":
     c1, c2, c3 = st.columns(3)
 
     c1.metric("Candidates", len(df))
+
     c2.metric(
         "Verified",
         f"{int(verified.sum())}/{len(df)}",
     )
+
     c3.metric(
         "Best TAC",
         int(scores.min()) if not scores.empty else "N/A",
     )
 
     st.subheader("Candidate Results")
+
     st.dataframe(
         df,
         use_container_width=True,
@@ -645,6 +1050,7 @@ elif page == "Bayesian Optimization":
 
     plot_df = df.copy()
     plot_df["TAC Count"] = get_scores(plot_df)
+
     plot_df["Status"] = is_verified(plot_df).map({
         True: "Verified",
         False: "Not verified",
@@ -655,47 +1061,56 @@ elif page == "Bayesian Optimization":
         x="sequence",
         y="TAC Count",
         color="Status",
-        title=f"Bayesian candidates — seed {seed}",
+        title=f"Bayesian Candidates — Seed {seed}",
         hover_data=["sequence"],
     )
 
-    fig.update_layout(xaxis_tickangle=-45)
+    fig.update_layout(
+        xaxis_tickangle=-45
+    )
+
     st.plotly_chart(
         fig,
         use_container_width=True,
     )
 
     st.download_button(
-        f"Download seed {seed} CSV",
+        f"Download Seed {seed} CSV",
         df.to_csv(index=False).encode("utf-8"),
         file_name=f"optimization_results_seed_{seed}.csv",
         mime="text/csv",
     )
 
     image_path = (
-        DATA_DIR / f"optimization_results_seed_{seed}.png"
+        DATA_DIR
+        / f"optimization_results_seed_{seed}.png"
     )
 
     if image_path.exists():
         st.subheader("Saved Optimization Plot")
+
         st.image(
             str(image_path),
             use_container_width=True,
         )
 
 
-# Reports and downloads
+# ============================================================
+# REPORTS AND DOWNLOADS PAGE
+# ============================================================
+
 elif page == "Reports & Downloads":
     st.header("Reports & Downloads")
 
     for seed in (2026, 2027, 2028):
         report_path = (
-            DATA_DIR / f"optimization_report_seed_{seed}.txt"
+            DATA_DIR
+            / f"optimization_report_seed_{seed}.txt"
         )
 
         if report_path.exists():
             with st.expander(
-                f"Optimization report — seed {seed}"
+                f"Optimization Report — Seed {seed}"
             ):
                 report_text = report_path.read_text(
                     encoding="utf-8",
@@ -705,7 +1120,7 @@ elif page == "Reports & Downloads":
                 st.text(report_text)
 
                 st.download_button(
-                    f"Download report {seed}",
+                    f"Download Report {seed}",
                     report_text,
                     file_name=(
                         f"optimization_report_seed_{seed}.txt"
@@ -716,22 +1131,33 @@ elif page == "Reports & Downloads":
 
     st.subheader("All Available Result Files")
 
-    for path in sorted(DATA_DIR.iterdir()):
+    for path in (
+        sorted(DATA_DIR.iterdir())
+        if DATA_DIR.exists()
+        else []
+    ):
         if not path.is_file():
             continue
 
-        if path.suffix.lower() in [".csv", ".txt", ".png"]:
+        if path.suffix.lower() in [
+            ".csv",
+            ".txt",
+            ".png",
+        ]:
             st.write(
                 f"**{path.name}** "
                 f"({path.stat().st_size:,} bytes)"
             )
 
             if path.suffix.lower() == ".png":
-                with st.expander(f"Preview {path.name}"):
+                with st.expander(
+                    f"Preview {path.name}"
+                ):
                     st.image(
                         str(path),
                         use_container_width=True,
                     )
+
             else:
                 st.download_button(
                     f"Download {path.name}",
