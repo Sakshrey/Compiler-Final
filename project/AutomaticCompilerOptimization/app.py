@@ -131,7 +131,13 @@ def get_compiler():
 
     newest_source = max(item.stat().st_mtime for item in source_files)
     if not built.exists() or built.stat().st_mtime < newest_source:
-        command = [gcc, "-O2", "-o", str(built)] + [str(item) for item in source_files]
+    command = [
+    gcc,
+    "-D_POSIX_C_SOURCE=200809L",
+    "-O2",
+    "-o",
+    str(built),
+] + [str(item) for item in source_files]
         result = subprocess.run(command, capture_output=True, text=True, timeout=60, cwd=str(ROOT))
         if result.returncode:
             raise RuntimeError("Could not build compiler:\n" + result.stderr[-5000:])
