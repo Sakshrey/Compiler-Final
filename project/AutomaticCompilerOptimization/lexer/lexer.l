@@ -1,4 +1,5 @@
 %{
+#include <stdio.h>
 #include "parser.tab.h"
 #include <string.h>
 %}
