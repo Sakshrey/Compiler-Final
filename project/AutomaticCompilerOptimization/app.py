@@ -1446,25 +1446,7 @@ if page == "ML / RL Comparison":
                 "advantage grows as the number of passes increases."
             )
 
-    st.subheader("5. Accuracy: what can honestly be shown?")
-
-    st.markdown(
-        """
-        For this project, *accuracy* is meaningful only if we define a
-        prediction target and measure predictions against ground truth.
-        For example, a pass-sequence hit rate could measure how often a model
-        predicts a sequence that matches the exhaustive-search best sequence
-        on held-out programs.
-
-        Section 4b reports an **optimum-hit rate** for search-based baselines
-        (random, greedy, Q-learning) on the current program. A supervised ML
-        model trained across many programs has **not** been run, so no
-        accuracy value for it is shown. We do not fill the charts with
-        invented percentages or numbers copied from unrelated papers.
-        """
-    )
-
-    st.subheader("6. Research references")
+    st.subheader("5. Research references")
 
     st.markdown(
         """
