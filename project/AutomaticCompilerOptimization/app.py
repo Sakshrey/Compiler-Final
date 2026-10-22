@@ -1,9 +1,12 @@
 from pathlib import Path
 import os
+import random
 import shutil
 import subprocess
 from itertools import permutations
+from math import factorial
 
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import streamlit as st
@@ -186,6 +189,114 @@ def evaluate_sequence(compiler, source_code, order):
         "Original TAC": original,
         "Optimized TAC": optimized,
     }
+
+
+# ============================================================
+# BASELINE SIMULATORS (ML / RL-STYLE) USING EXHAUSTIVE GROUND TRUTH
+# ============================================================
+
+def _lookup(cache):
+    """Map sequence label -> TAC count (failures get a huge penalty)."""
+    return {
+        k: (
+            v["Optimized TAC instructions"]
+            if v["Optimized TAC instructions"] is not None
+            else 10**6
+        )
+        for k, v in cache.items()
+    }
+
+
+def _best_so_far(scores, budget):
+    """Running minimum over the first `budget` evaluations."""
+    out, cur = [], float("inf")
+
+    for s in scores[:budget]:
+        cur = min(cur, s)
+        out.append(cur)
+
+    while len(out) < budget:  # pad if the method stopped early
+        out.append(cur)
+
+    return out
+
+
+def sim_random(lookup, budget, seed):
+    """Random search without replacement."""
+    rng = random.Random(seed)
+    picks = rng.sample(list(lookup), min(budget, len(lookup)))
+    return _best_so_far([lookup[p] for p in picks], budget)
+
+
+def sim_greedy(lookup, budget):
+    """Greedy hill-climbing: add the best next pass until no improvement."""
+    seq, seen_scores, best = (), [], float("inf")
+
+    while len(seq) < len(PASSES):
+        trial = []
+
+        for p in PASSES:
+            if p in seq:
+                continue
+
+            label = " -> ".join(seq + (p,))
+            s = lookup[label]
+            seen_scores.append(s)
+            trial.append((s, p))
+
+        s, p = min(trial)
+
+        if s >= best:
+            break
+
+        best, seq = s, seq + (p,)
+
+    return _best_so_far(seen_scores, budget)
+
+
+def sim_qlearning(lookup, budget, seed, alpha=0.5, eps=0.25):
+    """
+    Tabular Q-learning agent. Each episode builds a pass sequence one
+    pass at a time (or STOPs). Reward = -(final TAC count).
+    """
+    rng = random.Random(seed)
+    Q, visited = {}, []
+
+    for _ in range(budget):
+        state = ()
+
+        while True:
+            actions = [p for p in PASSES if p not in state]
+
+            if state:
+                actions.append("STOP")
+
+            if not actions:
+                break
+
+            if rng.random() < eps:
+                a = rng.choice(actions)
+            else:
+                a = max(actions, key=lambda x: Q.get((state, x), 0.0))
+
+            terminal = (a == "STOP") or (len(state) == len(PASSES) - 1)
+
+            if terminal:
+                final_seq = state if a == "STOP" else state + (a,)
+                reward = -lookup[" -> ".join(final_seq)]
+                old = Q.get((state, a), 0.0)
+                Q[(state, a)] = old + alpha * (reward - old)
+                visited.append(-reward)
+                break
+
+            nxt = state + (a,)
+            nxt_actions = [p for p in PASSES if p not in nxt] + ["STOP"]
+            future = max(Q.get((nxt, x), 0.0) for x in nxt_actions)
+            old = Q.get((state, a), 0.0)
+            Q[(state, a)] = old + alpha * (future - old)
+            state = nxt
+
+    return _best_so_far(visited, budget)
 
 
 # ============================================================
@@ -523,6 +634,7 @@ page = st.sidebar.radio(
         "ML / RL Comparison",
     ],
 )
+
 # ============================================================
 # TRY YOUR CODE
 # ============================================================
@@ -982,17 +1094,18 @@ if page == "Reports & Downloads":
         )
 
 # ============================================================
-# ML / RL LITERATURE COMPARISON
+# ML / RL COMPARISON
 # ============================================================
 
 if page == "ML / RL Comparison":
     st.header("Comparison with Machine Learning and Reinforcement Learning")
 
     st.warning(
-        "ML and RL values below are qualitative literature comparisons, "
-        "not experimental results from this custom compiler. This app does "
-        "not run ML or RL models. Do not interpret literature results as "
-        "accuracy measured on our program."
+        "Section 4b runs lightweight ML/RL-style baselines (random search, "
+        "greedy hill-climbing, tabular Q-learning) on this compiler's "
+        "exhaustive results. Published deep-learning systems (AutoPhase, "
+        "CompilerGym) are compared qualitatively only; they were not re-run "
+        "here."
     )
 
     st.subheader("1. Methods comparison")
@@ -1046,8 +1159,6 @@ if page == "ML / RL Comparison":
     )
 
     st.subheader("2. Search-space size")
-
-    from math import factorial
 
     space_rows = []
     for k in range(1, len(PASSES) + 1):
@@ -1207,20 +1318,149 @@ if page == "ML / RL Comparison":
                     "estimate."
                 )
 
+        # ----------------------------------------------------
+        # 4b. MEASURED COMPARISON: BO vs ML/RL-STYLE BASELINES
+        # ----------------------------------------------------
+        if result["ex_best_count"] is not None:
+            st.subheader("4b. Measured comparison: BO vs ML/RL-style baselines")
+
+            st.caption(
+                "All methods are scored on the same exhaustive ground truth "
+                "for the current program. Random search and Q-learning are "
+                "averaged over 30 seeds; Bayesian Optimization is the single "
+                "run from your sidebar seed; greedy is deterministic."
+            )
+
+            lookup = _lookup(result["exhaustive_cache"])
+            budget = int(result["bo_trials"])
+            optimum = result["ex_best_count"]
+            n_seeds = 30
+
+            rand_runs = np.array(
+                [sim_random(lookup, budget, s) for s in range(n_seeds)]
+            )
+            rl_runs = np.array(
+                [sim_qlearning(lookup, budget, s) for s in range(n_seeds)]
+            )
+            greedy_run = sim_greedy(lookup, budget)
+
+            bo_scores = pd.to_numeric(
+                result["bayesian_df"]["Optimized TAC instructions"],
+                errors="coerce",
+            ).fillna(10**6).tolist()
+            bo_run = _best_so_far(bo_scores, budget)
+
+            curves = {
+                "Bayesian Optimization (ours)": np.array(bo_run),
+                "Random Search": rand_runs.mean(axis=0),
+                "Q-Learning (RL baseline)": rl_runs.mean(axis=0),
+                "Greedy Hill-Climbing": np.array(greedy_run),
+            }
+
+            curve_df = pd.DataFrame([
+                {"Trial": t + 1, "Method": m, "Best TAC so far": float(v)}
+                for m, arr in curves.items()
+                for t, v in enumerate(arr)
+            ])
+
+            st.plotly_chart(
+                px.line(
+                    curve_df,
+                    x="Trial",
+                    y="Best TAC so far",
+                    color="Method",
+                    title=(
+                        "Convergence: best TAC found vs. trials "
+                        "(lower is better)"
+                    ),
+                ),
+                use_container_width=True,
+            )
+
+            def hit_rate(runs):
+                return float((runs[:, -1] <= optimum).mean() * 100)
+
+            sum_df = pd.DataFrame([
+                {
+                    "Method": "Bayesian Optimization (ours)",
+                    "Final best TAC": float(bo_run[-1]),
+                    "Reached exhaustive optimum (%)": (
+                        100.0 if bo_run[-1] <= optimum else 0.0
+                    ),
+                },
+                {
+                    "Method": "Random Search",
+                    "Final best TAC": float(rand_runs[:, -1].mean()),
+                    "Reached exhaustive optimum (%)": hit_rate(rand_runs),
+                },
+                {
+                    "Method": "Q-Learning (RL baseline)",
+                    "Final best TAC": float(rl_runs[:, -1].mean()),
+                    "Reached exhaustive optimum (%)": hit_rate(rl_runs),
+                },
+                {
+                    "Method": "Greedy Hill-Climbing",
+                    "Final best TAC": float(greedy_run[-1]),
+                    "Reached exhaustive optimum (%)": (
+                        100.0 if greedy_run[-1] <= optimum else 0.0
+                    ),
+                },
+            ])
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.plotly_chart(
+                    px.bar(
+                        sum_df,
+                        x="Method",
+                        y="Final best TAC",
+                        color="Method",
+                        title="Final best TAC (mean for stochastic methods)",
+                    ),
+                    use_container_width=True,
+                )
+
+            with col2:
+                st.plotly_chart(
+                    px.bar(
+                        sum_df,
+                        x="Method",
+                        y="Reached exhaustive optimum (%)",
+                        color="Method",
+                        title="How often the true optimum was found",
+                    ),
+                    use_container_width=True,
+                )
+
+            st.dataframe(
+                sum_df,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            st.caption(
+                "Q-learning here is a small tabular agent, not DQN or PPO. "
+                "With only 64 candidates, a budget near 40 covers most of "
+                "the space, so random search is a strong baseline; BO's "
+                "advantage grows as the number of passes increases."
+            )
+
     st.subheader("5. Accuracy: what can honestly be shown?")
 
     st.markdown(
         """
         For this project, *accuracy* is meaningful only if we define a
-        prediction target and have measured predictions against ground truth.
+        prediction target and measure predictions against ground truth.
         For example, a pass-sequence hit rate could measure how often a model
         predicts a sequence that matches the exhaustive-search best sequence
         on held-out programs.
 
-        We have not run standalone supervised ML or RL models on this
-        compiler, so their accuracy values are **not available**. We should
-        not fill the chart with invented percentages or numbers copied from
-        unrelated papers.
+        Section 4b reports an **optimum-hit rate** for search-based baselines
+        (random, greedy, Q-learning) on the current program. A supervised ML
+        model trained across many programs has **not** been run, so no
+        accuracy value for it is shown. We do not fill the charts with
+        invented percentages or numbers copied from unrelated papers.
         """
     )
 
@@ -1244,9 +1484,11 @@ if page == "ML / RL Comparison":
 
     st.info(
         "Suggested report wording: 'We experimentally compare exhaustive "
-        "search and Bayesian Optimization on our custom compiler. ML and RL "
-        "are compared qualitatively using published literature; they were "
-        "not experimentally evaluated in this prototype.'"
+        "search, Bayesian Optimization, and lightweight baselines (random "
+        "search, greedy hill-climbing, tabular Q-learning) on our custom "
+        "compiler. Deep ML and RL systems from the literature are compared "
+        "qualitatively; they were not experimentally evaluated in this "
+        "prototype.'"
     )
 
 
