@@ -1184,6 +1184,115 @@ if page == "ML / RL Comparison":
     fig_space.update_layout(xaxis=dict(dtick=1))
     st.plotly_chart(fig_space, use_container_width=True)
 
+    st.markdown("**How the search space grows with more passes**")
+
+    st.latex(
+        r"\text{Total sequences}(n) = \sum_{k=1}^{n} \frac{n!}{(n-k)!}"
+    )
+
+    growth_df = pd.DataFrame([
+        {
+            "Number of passes": n,
+            "Total sequences": sum(
+                factorial(n) // factorial(n - k) for k in range(1, n + 1)
+            ),
+        }
+        for n in range(1, 9)
+    ])
+
+    fig_growth = px.line(
+        growth_df,
+        x="Number of passes",
+        y="Total sequences",
+        markers=True,
+        text="Total sequences",
+        log_y=True,
+        title="Search-Space Growth (log scale)",
+    )
+    fig_growth.update_traces(textposition="top left")
+    fig_growth.update_layout(xaxis=dict(dtick=1))
+
+    st.plotly_chart(fig_growth, use_container_width=True)
+
+    st.dataframe(
+        growth_df,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.caption(
+        "Our compiler has 4 passes, so exhaustive search covers 64 "
+        "sequences. The space grows factorially, which is why guided "
+        "search such as Bayesian Optimization matters for larger pass sets."
+    )
+
+    st.markdown("**Search-space landscape for the current program**")
+
+    if not result_matches_input:
+        st.info(
+            "Run 'Analyze this input' in the sidebar to see how the 64 "
+            "candidate sequences perform on the current program."
+        )
+
+    else:
+        land_df = result["exhaustive_df"].copy()
+        land_df["Optimized TAC instructions"] = pd.to_numeric(
+            land_df["Optimized TAC instructions"],
+            errors="coerce",
+        )
+        land_df = land_df.dropna(subset=["Optimized TAC instructions"])
+
+        if land_df.empty:
+            st.warning("No successful candidates to analyze.")
+        else:
+            land_df["Sequence length"] = (
+                land_df["Sequence"].str.count("->") + 1
+            )
+
+            best_val = land_df["Optimized TAC instructions"].min()
+            worst_val = land_df["Optimized TAC instructions"].max()
+            n_best = int(
+                (land_df["Optimized TAC instructions"] == best_val).sum()
+            )
+            n_total = len(land_df)
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Candidates", n_total)
+            m2.metric("Optimal sequences", n_best)
+            m3.metric("Optimal share of space", f"{n_best / n_total * 100:.1f}%")
+            m4.metric("TAC range (best-worst)", f"{int(best_val)}-{int(worst_val)}")
+
+            h1, h2 = st.columns(2)
+
+            with h1:
+                st.plotly_chart(
+                    px.histogram(
+                        land_df,
+                        x="Optimized TAC instructions",
+                        title="Distribution of TAC counts across the space",
+                    ),
+                    use_container_width=True,
+                )
+
+            with h2:
+                st.plotly_chart(
+                    px.box(
+                        land_df,
+                        x="Sequence length",
+                        y="Optimized TAC instructions",
+                        points="all",
+                        title="TAC count by sequence length",
+                    ),
+                    use_container_width=True,
+                )
+
+            st.caption(
+                "If many sequences already reach the optimum, the landscape "
+                "is easy and even random search does well. If only a few do, "
+                "guided search has more to gain. This depends on the input "
+                "program."
+            )
+
     st.subheader("3. Evaluation budget versus exhaustive search")
 
     actual_unique = (
