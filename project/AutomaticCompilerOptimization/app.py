@@ -248,7 +248,6 @@ def run_analysis(source_code, bo_trials, random_seed):
     # 2. BAYESIAN OPTIMIZATION
     # --------------------------------------------------------
 
-    # This cache is independent of the exhaustive-search cache.
     bayesian_cache = {}
 
     optimizer = Optimizer(
@@ -292,7 +291,6 @@ def run_analysis(source_code, bo_trials, random_seed):
 
         score = row["Optimized TAC instructions"]
 
-        # Failed compilations receive a penalty.
         optimizer.tell(
             suggestion,
             float(score) if score is not None else 1_000_000.0,
@@ -522,9 +520,9 @@ page = st.sidebar.radio(
         "Exhaustive Search",
         "Bayesian Optimization",
         "Reports & Downloads",
+        "ML / RL Comparison",
     ],
 )
-
 # ============================================================
 # TRY YOUR CODE
 # ============================================================
@@ -982,6 +980,275 @@ if page == "Reports & Downloads":
             use_container_width=True,
             hide_index=True,
         )
+
+# ============================================================
+# ML / RL LITERATURE COMPARISON
+# ============================================================
+
+if page == "ML / RL Comparison":
+    st.header("Comparison with Machine Learning and Reinforcement Learning")
+
+    st.warning(
+        "ML and RL values below are qualitative literature comparisons, "
+        "not experimental results from this custom compiler. This app does "
+        "not run ML or RL models. Do not interpret literature results as "
+        "accuracy measured on our program."
+    )
+
+    st.subheader("1. Methods comparison")
+
+    comparison_df = pd.DataFrame([
+        {
+            "Method": "Exhaustive Search",
+            "How it works": "Evaluates every candidate sequence",
+            "Uses feedback": "Evaluates each sequence",
+            "Separate training required": "No",
+            "Main advantage": "Finds the best candidate in the defined search space",
+            "Main limitation": "Evaluates all 64 candidates"
+        },
+        {
+            "Method": "Bayesian Optimization (our implementation)",
+            "How it works": "Uses a Random Forest surrogate and Expected Improvement",
+            "Uses feedback": "Yes",
+            "Separate training required": "No separate labelled dataset",
+            "Main advantage": "Can explore promising candidates with fewer evaluations",
+            "Main limitation": "May miss the exhaustive-search best sequence within a small budget"
+        },
+        {
+            "Method": "Supervised Machine Learning",
+            "How it works": "Learns from labelled programs and optimization outcomes",
+            "Uses feedback": "Through its labelled training data",
+            "Separate training required": "Yes",
+            "Main advantage": "Can predict a sequence quickly after training",
+            "Main limitation": "Needs representative labelled examples and may not generalize"
+        },
+        {
+            "Method": "Reinforcement Learning",
+            "How it works": "Learns sequential pass decisions from rewards",
+            "Uses feedback": "Yes, via rewards",
+            "Separate training required": "Usually requires training interactions",
+            "Main advantage": "Can learn multi-step optimization policies",
+            "Main limitation": "Training and exploration can be costly"
+        }
+    ])
+
+    st.dataframe(
+        comparison_df,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.download_button(
+        "Download method comparison (CSV)",
+        data=comparison_df.to_csv(index=False).encode("utf-8"),
+        file_name="bo_ml_rl_method_comparison.csv",
+        mime="text/csv"
+    )
+
+    st.subheader("2. Search-space size")
+
+    from math import factorial
+
+    space_rows = []
+    for k in range(1, len(PASSES) + 1):
+        count = factorial(len(PASSES)) // factorial(len(PASSES) - k)
+        space_rows.append({
+            "Sequence length": k,
+            "Possible sequences": count
+        })
+
+    space_df = pd.DataFrame(space_rows)
+
+    st.latex(
+        r"\sum_{k=1}^{4} P(4,k) = 4 + 12 + 24 + 24 = 64"
+    )
+
+    fig_space = px.bar(
+        space_df,
+        x="Sequence length",
+        y="Possible sequences",
+        text="Possible sequences",
+        title="Candidate Sequences by Number of Passes"
+    )
+    fig_space.update_layout(xaxis=dict(dtick=1))
+    st.plotly_chart(fig_space, use_container_width=True)
+
+    st.subheader("3. Evaluation budget versus exhaustive search")
+
+    actual_unique = (
+        len(result["bayesian_cache"])
+        if result_matches_input
+        else None
+    )
+
+    bo_evaluations = (
+        int(result["bo_trials"])
+        if result_matches_input
+        else int(bo_trials)
+    )
+
+    budget_rows = [
+        {
+            "Method": "Bayesian Optimization",
+            "Configured trials": bo_evaluations,
+            "Unique sequences": actual_unique
+        },
+        {
+            "Method": "Exhaustive Search",
+            "Configured trials": 64,
+            "Unique sequences": 64
+        }
+    ]
+
+    budget_df = pd.DataFrame(budget_rows)
+
+    budget_df["Configured budget (% of 64)"] = (
+        budget_df["Configured trials"] / 64 * 100
+    ).clip(upper=100)
+
+    fig_budget = px.bar(
+        budget_df,
+        x="Method",
+        y="Configured trials",
+        color="Method",
+        text="Configured trials",
+        title="Configured Candidate Evaluation Budget"
+    )
+
+    fig_budget.update_layout(yaxis_title="Candidate evaluations")
+
+    st.plotly_chart(
+        fig_budget,
+        use_container_width=True,
+    )
+
+    st.dataframe(
+        budget_df,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.caption(
+        "The BO budget is the number of trials requested, not necessarily "
+        "the number of unique sequences: repeated suggestions can be cached. "
+        "Configured budget is not the same as unique search-space coverage."
+    )
+
+    st.subheader("4. Current-program optimization results")
+
+    if not result_matches_input:
+        st.info(
+            "Run 'Analyze this input' in the sidebar first to show actual "
+            "exhaustive-search and Bayesian Optimization results for the "
+            "current program."
+        )
+
+    else:
+        method_rows = []
+
+        if result["ex_best_count"] is not None:
+            method_rows.append({
+                "Method": "Exhaustive Search",
+                "Best TAC instructions": result["ex_best_count"],
+                "Best sequence": result["ex_best_label"],
+                "Evaluations": result["candidate_count"]
+            })
+
+        if result["bo_best_count"] is not None:
+            method_rows.append({
+                "Method": "Bayesian Optimization",
+                "Best TAC instructions": result["bo_best_count"],
+                "Best sequence": result["bo_best_label"],
+                "Evaluations": result["bo_trials"]
+            })
+
+        current_results = pd.DataFrame(method_rows)
+
+        if not current_results.empty:
+            st.dataframe(
+                current_results,
+                use_container_width=True,
+                hide_index=True
+            )
+
+            fig_tac = px.bar(
+                current_results,
+                x="Method",
+                y="Best TAC instructions",
+                color="Method",
+                text="Best TAC instructions",
+                title=(
+                    "Measured Best TAC Count for This Program "
+                    "(Lower Is Better)"
+                )
+            )
+
+            st.plotly_chart(
+                fig_tac,
+                use_container_width=True,
+            )
+
+            if (
+                result["ex_best_count"] is not None
+                and result["bo_best_count"] is not None
+            ):
+                matched = (
+                    result["bo_best_count"] == result["ex_best_count"]
+                )
+
+                st.metric(
+                    "BO matched exhaustive best TAC count on this input",
+                    "Yes" if matched else "No"
+                )
+
+                st.caption(
+                    "This is a result for one input program only. It is not "
+                    "a general ML/RL accuracy score or a statistical accuracy "
+                    "estimate."
+                )
+
+    st.subheader("5. Accuracy: what can honestly be shown?")
+
+    st.markdown(
+        """
+        For this project, *accuracy* is meaningful only if we define a
+        prediction target and have measured predictions against ground truth.
+        For example, a pass-sequence hit rate could measure how often a model
+        predicts a sequence that matches the exhaustive-search best sequence
+        on held-out programs.
+
+        We have not run standalone supervised ML or RL models on this
+        compiler, so their accuracy values are **not available**. We should
+        not fill the chart with invented percentages or numbers copied from
+        unrelated papers.
+        """
+    )
+
+    st.subheader("6. Research references")
+
+    st.markdown(
+        """
+        - Huang et al., **AutoPhase: Juggling HLS Phase Orderings in Random
+          Forests with Deep Reinforcement Learning** (2020).
+          [Paper](https://arxiv.org/abs/2003.00671)
+
+        - Cummins et al., **CompilerGym: Robust, Performant Compiler
+          Optimization Environments for Reinforcement Learning** (2022).
+          [Paper](https://arxiv.org/abs/2110.06944)
+
+        These studies use their own environments, benchmarks and objectives.
+        Their reported results are useful background, but they are not
+        directly comparable to TAC counts from this custom compiler.
+        """
+    )
+
+    st.info(
+        "Suggested report wording: 'We experimentally compare exhaustive "
+        "search and Bayesian Optimization on our custom compiler. ML and RL "
+        "are compared qualitatively using published literature; they were "
+        "not experimentally evaluated in this prototype.'"
+    )
+
 
 # ============================================================
 # FOOTER
